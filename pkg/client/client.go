@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 
 	"github.com/gorilla/websocket"
 )
@@ -16,6 +17,8 @@ type Client struct {
 	localAddr  string
 	remoteAddr string
 	viaAddr    string
+
+	headers http.Header
 
 	errCh chan error
 }
@@ -32,8 +35,13 @@ func NewClient(
 		localAddr:  localAddr,
 		remoteAddr: remoteAddr,
 		viaAddr:    viaAddr,
+		headers:    http.Header{},
 		errCh:      errCh,
 	}
+}
+
+func (c *Client) SetHeader(key, value string) {
+	c.headers.Set(key, value)
 }
 
 func (c *Client) ListenAndServe() error {
@@ -60,7 +68,11 @@ func (c *Client) ListenAndServe() error {
 		go func() {
 			defer localConn.Close()
 
-			wsConn, _, err := websocket.DefaultDialer.DialContext(c.ctx, c.viaAddr+"/tunnels/"+base64encode(c.remoteAddr), nil)
+			wsConn, _, err := websocket.DefaultDialer.DialContext(
+				c.ctx,
+				c.viaAddr+"/tunnels/"+base64encode(c.remoteAddr),
+				c.headers,
+			)
 			if err != nil {
 				if c.errCh != nil {
 					c.errCh <- fmt.Errorf("error dialing WebSocket server: %w", err)

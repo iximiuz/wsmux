@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 
 	"github.com/gorilla/websocket"
 )
@@ -52,25 +53,24 @@ var upgrader = websocket.Upgrader{
 }
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
-	tcpAddr, err := base64decode(r.PathValue("addr"))
+	destAddr, err := base64decode(r.PathValue("addr"))
 	if err != nil {
 		http.Error(w, "invalid destination address", http.StatusBadRequest)
 		return
 	}
-
-	port := string(tcpAddr)
+	destAddr = strings.TrimSpace(destAddr)
 
 	wsConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		fmt.Printf("WebSocket upgrade error: %v\n", err)
+		s.errCh <- fmt.Errorf("WebSocket upgrade error: %v", err)
 		return
 	}
 	defer wsConn.Close()
 
-	d := net.Dialer{}
-	tcpConn, err := d.DialContext(s.ctx, "tcp", port)
+	var d net.Dialer
+	tcpConn, err := d.DialContext(s.ctx, "tcp", destAddr)
 	if err != nil {
-		fmt.Printf("Error connecting to TCP address %s: %v\n", tcpAddr, err)
+		s.errCh <- fmt.Errorf("error connecting to TCP address %s: %v", destAddr, err)
 		return
 	}
 	defer tcpConn.Close()
@@ -79,6 +79,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	io.Copy(tcpConn, wsConn.UnderlyingConn())
 }
 
-func base64decode(s string) ([]byte, error) {
-	return base64.StdEncoding.DecodeString(s)
+func base64decode(s string) (string, error) {
+	decoded, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return "", err
+	}
+	return string(decoded), nil
 }

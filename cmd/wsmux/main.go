@@ -10,6 +10,12 @@ import (
 	"github.com/iximiuz/wsmux/pkg/server"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 const usage = `Usage:
   # Server - listen for incoming WebSocket connections and tunnel ports
   wsmux serve -addr [host]:<port>
@@ -32,6 +38,9 @@ func main() {
 
 	case "proxy":
 		proxy(ctx)
+
+	case "version":
+		fmt.Printf("wsmux %s (built: %s commit: %s)\n", version, date, commit)
 
 	default:
 		fmt.Print(usage)

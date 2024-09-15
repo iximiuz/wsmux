@@ -63,7 +63,9 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 	wsConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		s.errCh <- fmt.Errorf("WebSocket upgrade error: %v", err)
+		if s.errCh != nil {
+			s.errCh <- fmt.Errorf("WebSocket upgrade error: %v", err)
+		}
 		return
 	}
 	defer wsConn.Close()
@@ -71,20 +73,76 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	var d net.Dialer
 	tcpConn, err := d.DialContext(s.ctx, "tcp", destAddr)
 	if err != nil {
-		s.errCh <- fmt.Errorf("error connecting to TCP address %s: %v", destAddr, err)
+		if s.errCh != nil {
+			s.errCh <- fmt.Errorf("error connecting to TCP address %s: %v", destAddr, err)
+		}
 		return
 	}
 	defer tcpConn.Close()
 
+	// Start ping sender
 	go s.runPingSender(wsConn)
 
-	go func() { io.Copy(wsConn.UnderlyingConn(), tcpConn) }()
-	io.Copy(tcpConn, wsConn.UnderlyingConn())
+	// Channel to signal when one side of the connection closes
+	done := make(chan struct{})
+
+	// Copy data from WebSocket to TCP
+	go func() {
+		defer close(done)
+		for {
+			messageType, data, err := wsConn.ReadMessage()
+			if err != nil {
+				if s.errCh != nil {
+					s.errCh <- fmt.Errorf("WebSocket read error: %v", err)
+				}
+				return
+			}
+			if messageType != websocket.BinaryMessage {
+				if s.errCh != nil {
+					s.errCh <- fmt.Errorf("invalid message type: %d", messageType)
+				}
+				return
+			}
+
+			if len(data) > 0 {
+				if _, err = tcpConn.Write(data); err != nil {
+					if s.errCh != nil {
+						s.errCh <- fmt.Errorf("TCP write error: %v", err)
+					}
+					return
+				}
+			}
+		}
+	}()
+
+	// Copy data from TCP to WebSocket
+	go func() {
+		buffer := make([]byte, 1024)
+		for {
+			n, err := tcpConn.Read(buffer)
+			if err != nil {
+				if err != io.EOF {
+					if s.errCh != nil {
+						s.errCh <- fmt.Errorf("TCP read error: %v", err)
+					}
+				}
+				return
+			}
+			if n > 0 {
+				if err := wsConn.WriteMessage(websocket.BinaryMessage, buffer[:n]); err != nil {
+					if s.errCh != nil {
+						s.errCh <- fmt.Errorf("WebSocket write error: %v", err)
+					}
+					return
+				}
+			}
+		}
+	}()
+
+	<-done // Wait for either side to close
 }
 
 func (s *Server) runPingSender(wsConn *websocket.Conn) {
-	wsConn.SetPongHandler(nil)
-
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -92,6 +150,9 @@ func (s *Server) runPingSender(wsConn *websocket.Conn) {
 		select {
 		case <-ticker.C:
 			if err := wsConn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
+				if s.errCh != nil {
+					s.errCh <- fmt.Errorf("ping error: %v", err)
+				}
 				return
 			}
 		case <-s.ctx.Done():

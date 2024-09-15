@@ -81,10 +81,63 @@ func (c *Client) ListenAndServe() error {
 			}
 			defer wsConn.Close()
 
-			wsConn.SetPingHandler(nil)
+			// Channel to signal when one side of the connection closes
+			done := make(chan struct{})
 
-			go func() { io.Copy(wsConn.UnderlyingConn(), localConn) }()
-			io.Copy(localConn, wsConn.UnderlyingConn())
+			// Copy data from WebSocket to local TCP connection
+			go func() {
+				defer close(done)
+				for {
+					messageType, data, err := wsConn.ReadMessage()
+					if err != nil {
+						if c.errCh != nil {
+							c.errCh <- fmt.Errorf("WebSocket read error: %v", err)
+						}
+						return
+					}
+					if messageType != websocket.BinaryMessage {
+						if c.errCh != nil {
+							c.errCh <- fmt.Errorf("invalid message type: %d", messageType)
+						}
+						return
+					}
+
+					if len(data) > 0 {
+						if _, err = localConn.Write(data); err != nil {
+							if c.errCh != nil {
+								c.errCh <- fmt.Errorf("local TCP write error: %v", err)
+							}
+							return
+						}
+					}
+				}
+			}()
+
+			// Copy data from local TCP connection to WebSocket
+			go func() {
+				buffer := make([]byte, 1024)
+				for {
+					n, err := localConn.Read(buffer)
+					if err != nil {
+						if err != io.EOF {
+							if c.errCh != nil {
+								c.errCh <- fmt.Errorf("local TCP read error: %v", err)
+							}
+						}
+						return
+					}
+					if n > 0 {
+						if err = wsConn.WriteMessage(websocket.BinaryMessage, buffer[:n]); err != nil {
+							if c.errCh != nil {
+								c.errCh <- fmt.Errorf("WebSocket write error: %v", err)
+							}
+							return
+						}
+					}
+				}
+			}()
+
+			<-done // Wait for either side to close
 		}()
 	}
 

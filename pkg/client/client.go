@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -82,9 +81,7 @@ func (c *Client) ListenAndServe() error {
 			}
 			defer wsConn.Close()
 
-			wsConn.SetPongHandler(func(string) error {
-				return wsConn.SetReadDeadline(time.Now().Add(60 * time.Second))
-			})
+			wsConn.SetPingHandler(nil)
 
 			go func() { io.Copy(wsConn.UnderlyingConn(), localConn) }()
 			io.Copy(localConn, wsConn.UnderlyingConn())

@@ -83,6 +83,8 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runPingSender(wsConn *websocket.Conn) {
+	wsConn.SetPongHandler(nil)
+
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 

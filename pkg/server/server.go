@@ -78,13 +78,48 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 	go s.runPingSender(wsConn)
 
-	go func() { io.Copy(wsConn.UnderlyingConn(), tcpConn) }()
-	io.Copy(tcpConn, wsConn.UnderlyingConn())
+	// Use channels to signal when copying is done
+	done := make(chan struct{})
+
+	// Copy from WebSocket to TCP
+	go func() {
+		defer close(done)
+		for {
+			messageType, reader, err := wsConn.NextReader()
+			if err != nil {
+				s.errCh <- fmt.Errorf("WebSocket read error: %v", err)
+				return
+			}
+			if messageType != websocket.BinaryMessage {
+				s.errCh <- fmt.Errorf("invalid message type: %d", messageType)
+				continue
+			}
+			if _, err := io.Copy(tcpConn, reader); err != nil {
+				s.errCh <- fmt.Errorf("copy to TCP error: %v", err)
+				return
+			}
+		}
+	}()
+
+	// Copy from TCP to WebSocket
+	for {
+		writer, err := wsConn.NextWriter(websocket.BinaryMessage)
+		if err != nil {
+			s.errCh <- fmt.Errorf("WebSocket write error: %v", err)
+			break
+		}
+		if _, err := io.Copy(writer, tcpConn); err != nil {
+			s.errCh <- fmt.Errorf("copy from TCP error: %v", err)
+			writer.Close()
+			break
+		}
+		writer.Close()
+	}
+
+	<-done // Wait for the copying goroutine to finish
 }
 
 func (s *Server) runPingSender(wsConn *websocket.Conn) {
-	wsConn.SetPongHandler(nil)
-
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
@@ -92,6 +127,7 @@ func (s *Server) runPingSender(wsConn *websocket.Conn) {
 		select {
 		case <-ticker.C:
 			if err := wsConn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
+				s.errCh <- fmt.Errorf("ping error: %v", err)
 				return
 			}
 		case <-s.ctx.Done():

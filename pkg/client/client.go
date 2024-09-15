@@ -81,10 +81,44 @@ func (c *Client) ListenAndServe() error {
 			}
 			defer wsConn.Close()
 
-			wsConn.SetPingHandler(nil)
+			done := make(chan struct{})
 
-			go func() { io.Copy(wsConn.UnderlyingConn(), localConn) }()
-			io.Copy(localConn, wsConn.UnderlyingConn())
+			// Copy from WebSocket to local TCP connection
+			go func() {
+				defer close(done)
+				for {
+					messageType, reader, err := wsConn.NextReader()
+					if err != nil {
+						c.errCh <- fmt.Errorf("WebSocket read error: %v", err)
+						return
+					}
+					if messageType != websocket.BinaryMessage {
+						c.errCh <- fmt.Errorf("invalid message type: %d", messageType)
+						continue
+					}
+					if _, err := io.Copy(localConn, reader); err != nil {
+						c.errCh <- fmt.Errorf("copy to local connection error: %v", err)
+						return
+					}
+				}
+			}()
+
+			// Copy from local TCP connection to WebSocket
+			for {
+				writer, err := wsConn.NextWriter(websocket.BinaryMessage)
+				if err != nil {
+					c.errCh <- fmt.Errorf("WebSocket write error: %v", err)
+					break
+				}
+				if _, err := io.Copy(writer, localConn); err != nil {
+					c.errCh <- fmt.Errorf("copy from local connection error: %v", err)
+					writer.Close()
+					break
+				}
+				writer.Close()
+			}
+
+			<-done // Wait for the copying goroutine to finish
 		}()
 	}
 

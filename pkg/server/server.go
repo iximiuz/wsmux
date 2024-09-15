@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -75,8 +76,26 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tcpConn.Close()
 
+	go s.runPingSender(wsConn)
+
 	go func() { io.Copy(wsConn.UnderlyingConn(), tcpConn) }()
 	io.Copy(tcpConn, wsConn.UnderlyingConn())
+}
+
+func (s *Server) runPingSender(wsConn *websocket.Conn) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if err := wsConn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
+				return
+			}
+		case <-s.ctx.Done():
+			return
+		}
+	}
 }
 
 func base64decode(s string) (string, error) {

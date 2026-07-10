@@ -21,6 +21,8 @@ type Client struct {
 	headers http.Header
 
 	errCh chan error
+
+	listener net.Listener
 }
 
 func NewClient(
@@ -44,11 +46,44 @@ func (c *Client) SetHeader(key, value string) {
 	c.headers.Set(key, value)
 }
 
-func (c *Client) ListenAndServe() error {
+// Listen binds the local listener without starting to serve. Calling it
+// separately from Serve lets the caller observe bind errors synchronously
+// and, when localAddr requests a kernel-assigned port (e.g. "127.0.0.1:0"),
+// discover the actually bound address via Addr before any connection is
+// accepted.
+func (c *Client) Listen() error {
 	listener, err := net.Listen("tcp", c.localAddr)
 	if err != nil {
 		return fmt.Errorf("error listening on %s: %w", c.localAddr, err)
 	}
+	c.listener = listener
+	return nil
+}
+
+// Addr returns the bound local address, or nil before a successful Listen.
+func (c *Client) Addr() net.Addr {
+	if c.listener == nil {
+		return nil
+	}
+	return c.listener.Addr()
+}
+
+func (c *Client) ListenAndServe() error {
+	if c.listener == nil {
+		if err := c.Listen(); err != nil {
+			return err
+		}
+	}
+	return c.Serve()
+}
+
+// Serve accepts connections on the listener created by Listen and bridges
+// each of them to the remote address via a per-connection WebSocket.
+func (c *Client) Serve() error {
+	if c.listener == nil {
+		return fmt.Errorf("Serve called before Listen")
+	}
+	listener := c.listener
 	defer listener.Close()
 
 	go func() {
